@@ -1,5 +1,4 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
-// frontend/src/components/ProductsPage.tsx
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";

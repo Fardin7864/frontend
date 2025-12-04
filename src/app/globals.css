@@ -8,7 +8,6 @@ body {
     sans-serif;
 }
 
-/* Make buttons feel a bit nicer globally */
 button {
   @apply transition-colors duration-150;
 }

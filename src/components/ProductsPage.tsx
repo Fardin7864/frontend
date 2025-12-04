@@ -1,5 +1,3 @@
-/* eslint-disable @typescript-eslint/no-explicit-any */
-// frontend/src/components/ProductsPage.tsx
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
@@ -179,96 +177,75 @@ export default function ProductsPage() {
     [toastCounter]
   );
 
-  // Load products
-  useEffect(() => {
-    const loadProducts = async () => {
-      try {
-        const data = await fetchJSON<Product[]>("/products");
-        setProducts(data);
-      } catch (e) {
-        console.error(e);
-        addToast("error", "Failed to load products.");
-      } finally {
-        setLoadingProducts(false);
-      }
-    };
-    loadProducts();
-  }, [addToast]);
-
-  // Load reservations for this user
-  const loadReservations = useCallback(async () => {
+  const reloadAll = useCallback(async () => {
     if (!userId) return;
+    setLoadingProducts(true);
     setLoadingReservations(true);
     try {
-      const data = await fetchJSON<Reservation[]>(
-        `/reservations/user/${userId}`
+      const [productsData, reservationsData] = await Promise.all([
+        fetchJSON<Product[]>("/products"),
+        fetchJSON<Reservation[]>(`/reservations/user/${userId}`),
+      ]);
+
+      setProducts(productsData);
+      setReservations(
+        reservationsData.map((r) => ({
+          ...r,
+          product: r.product ?? productsData.find((p) => p.id === r.productId),
+        }))
       );
-      setReservations(data);
     } catch (e) {
       console.error(e);
-      addToast("error", "Failed to load reservations.");
+      addToast("error", "Failed to load data.");
     } finally {
+      setLoadingProducts(false);
       setLoadingReservations(false);
     }
   }, [userId, addToast]);
 
+  // Initial load
   useEffect(() => {
     if (!userId) return;
-    loadReservations();
-  }, [userId, loadReservations]);
+    reloadAll();
+  }, [userId, reloadAll]);
 
-  // Periodic sync for reservations
-  useEffect(() => {
-    if (!userId) return;
-    const interval = setInterval(() => {
-      loadReservations();
-    }, 10000);
-    return () => clearInterval(interval);
-  }, [userId, loadReservations]);
-
-  // When timer (next expiration) elapses: refresh and show note
-  const handleTimerElapsed = useCallback(async () => {
-    await loadReservations();
-    await (async () => {
-      try {
-        const data = await fetchJSON<Product[]>("/products");
-        setProducts(data);
-      } catch (e) {
-        console.error(e);
-      }
-    })();
-    addToast("info", "One or more reservations may have expired.");
-  }, [loadReservations, addToast]);
-
-  // Compute active reservations & next expiration time
+  // Active reservations
   const activeReservations = useMemo(
     () => reservations.filter((r) => r.status === "ACTIVE"),
     [reservations]
   );
 
+  // Global timer based on LAST reservation's expiresAt
   const nextExpirationIso = useMemo(() => {
     if (activeReservations.length === 0) return undefined;
-    const minTime = Math.min(
+    const maxTime = Math.max(
       ...activeReservations.map((r) => new Date(r.expiresAt).getTime())
     );
-    return new Date(minTime).toISOString();
+    return new Date(maxTime).toISOString();
   }, [activeReservations]);
+
+  const handleTimerElapsed = useCallback(async () => {
+    await reloadAll();
+    addToast(
+      "info",
+      "Reservations synced – some may have expired and stock was released."
+    );
+  }, [reloadAll, addToast]);
 
   const { mm, ss } = useReservationTimer(nextExpirationIso, handleTimerElapsed);
 
-  const refreshProducts = useCallback(async () => {
-    try {
-      const data = await fetchJSON<Product[]>("/products");
-      setProducts(data);
-    } catch (e) {
-      console.error(e);
-    }
-  }, []);
+  const selectedProduct = products.find((p) => p.id === selectedProductId);
+
+  const hasAnyReservations = reservations.length > 0;
 
   // Reserve product
   const handleReserve = async () => {
-    if (!selectedProductId) {
+    if (!selectedProduct) {
       addToast("error", "Please select a product first.");
+      return;
+    }
+    if (quantity <= 0) {
+      addToast("error", "Quantity must be at least 1.");
       return;
     }
 
@@ -277,7 +254,7 @@ export default function ProductsPage() {
       const res = await fetchJSON<Reservation>("/reservations", {
         method: "POST",
         body: JSON.stringify({
-          productId: selectedProductId,
+          productId: selectedProduct.id,
           quantity,
           userId,
         }),
@@ -285,12 +262,10 @@ export default function ProductsPage() {
 
       addToast(
         "success",
-        `Reserved ${res.quantity} × ${
-          products.find((p) => p.id === res.productId)?.name ?? "product"
-        } for 2 minutes.`
+        `Reserved ${res.quantity} × ${selectedProduct.name} (total for this product) for 2 minutes.`
       );
-      await loadReservations();
-      await refreshProducts();
+
+      await reloadAll();
     } catch (e: any) {
       const msg =
         typeof e?.message === "string"
@@ -306,32 +281,32 @@ export default function ProductsPage() {
     }
   };
 
-  // Open modal for specific reservation
   const openPaymentModal = (r: Reservation) => {
     if (r.status !== "ACTIVE") return;
     setPaymentModalReservation(r);
   };
 
-  // Confirm completion from modal
   const handleConfirmPayment = async () => {
     if (!paymentModalReservation) return;
     setCompleting(true);
     try {
-      const res = await fetchJSON<Reservation>(
+      await fetchJSON<Reservation>(
         `/reservations/${paymentModalReservation.id}/complete`,
         { method: "POST" }
       );
+
+      const productName =
+        paymentModalReservation.product?.name ??
+        products.find((p) => p.id === paymentModalReservation.productId)
+          ?.name ??
+        "product";
+
       addToast(
         "success",
-        `Purchase completed for ${res.quantity} × ${
-          res.product?.name ??
-          products.find((p) => p.id === res.productId)?.name ??
-          "product"
-        }.`
+        `Purchase completed for ${paymentModalReservation.quantity} × ${productName}.`
       );
       setPaymentModalReservation(null);
-      await loadReservations();
-      await refreshProducts();
+      await reloadAll();
     } catch (e: any) {
       const msg =
         typeof e?.message === "string"
@@ -350,10 +325,63 @@ export default function ProductsPage() {
     }
   };
 
-  // UI states
-  const selectedProduct = products.find((p) => p.id === selectedProductId);
+  const handleReleaseReservation = async (r: Reservation) => {
+    try {
+      await fetchJSON<Reservation>(`/reservations/${r.id}/cancel`, {
+        method: "POST",
+      });
+      const productName =
+        r.product?.name ??
+        products.find((p) => p.id === r.productId)?.name ??
+        "product";
 
-  const hasAnyReservations = reservations.length > 0;
+      addToast(
+        "info",
+        `Released hold for ${r.quantity} × ${productName}. Stock restored.`
+      );
+
+      await reloadAll();
+    } catch (e: any) {
+      const msg =
+        typeof e?.message === "string"
+          ? e.message
+          : "Failed to release reservation.";
+      addToast("error", msg);
+    }
+  };
+
+  const clearSelection = () => {
+    setSelectedProductId(null);
+    setQuantity(1);
+  };
+
+  // 🔹 Reset database to default demo data
+  const handleResetDatabase = async () => {
+    if (typeof window !== "undefined") {
+      const ok = window.confirm(
+        "Reset demo data?\nThis will clear all reservations and restore default products."
+      );
+      if (!ok) return;
+    }
+
+    setLoadingProducts(true);
+    setLoadingReservations(true);
+    try {
+      await fetchJSON("/reservations/reset", { method: "POST" });
+      addToast("success", "Database reset to default demo data.");
+      await reloadAll();
+      clearSelection();
+    } catch (e: any) {
+      const msg =
+        typeof e?.message === "string"
+          ? e.message
+          : "Failed to reset database.";
+      addToast("error", msg);
+    } finally {
+      setLoadingProducts(false);
+      setLoadingReservations(false);
+    }
+  };
 
   return (
     <>
@@ -367,13 +395,25 @@ export default function ProductsPage() {
       />
 
       <main className="space-y-6 sm:space-y-8">
-        {/* Hero + global timer / active holds */}
+        {/* Hero + reservations summary + Reset button */}
         <section className="rounded-3xl bg-white/80 backdrop-blur border border-rose-100 shadow-sm p-4 sm:p-6 flex flex-col md:flex-row gap-5 md:items-center">
           <div className="flex-1 space-y-2">
-            <p className="inline-flex items-center gap-2 text-[11px] uppercase tracking-[0.18em] text-slate-500">
-              <span className="h-1 w-8 rounded-full bg-rose-400" />
-              Flash Sale · Cosmetics
-            </p>
+            <div className="flex items-center justify-between gap-3">
+              <p className="inline-flex items-center gap-2 text-[11px] uppercase tracking-[0.18em] text-slate-500">
+                <span className="h-1 w-8 rounded-full bg-rose-400" />
+                Flash Sale · Cosmetics
+              </p>
+
+              {/* ✅ Reset demo data button */}
+              <button
+                type="button"
+                onClick={handleResetDatabase}
+                className="text-[11px] sm:text-xs border border-rose-200 text-rose-500 px-3 py-1 rounded-full hover:bg-rose-50"
+              >
+                Reset demo data
+              </button>
+            </div>
+
             <h1 className="text-2xl sm:text-3xl md:text-4xl font-semibold leading-tight">
               Glow now,
               <span className="text-rose-500 ml-2">reserve in 2 minutes</span>
@@ -384,8 +424,8 @@ export default function ProductsPage() {
               automatically release it back for other beauty lovers.
             </p>
             <p className="text-[11px] sm:text-xs text-slate-500">
-              Payment is mocked for this demo – the backend transactionally
-              enforces stock limits and time-based expiration.
+              Backend background jobs enforce the real expiration. The UI just
+              shows timers and syncs when needed.
             </p>
           </div>
 
@@ -409,17 +449,17 @@ export default function ProductsPage() {
                     {activeReservations.length > 1 ? "s" : ""}
                   </span>
                   {nextExpirationIso && (
-                    <span className="text-xs bg-white/10 px-2 py-1 rounded-full">
-                      Next release in {mm}:{ss}
+                    <span className="text-xs bg.white/10 px-2 py-1 rounded-full bg-white/10">
+                      Expires in {mm}:{ss}
                     </span>
                   )}
                 </div>
 
-                <div className="max-h-32 overflow-auto space-y-1 text-xs">
+                <div className="max-h-40 overflow-auto space-y-1 text-xs">
                   {activeReservations.map((r) => (
                     <div
                       key={r.id}
-                      className="flex justify-between gap-2 border-b border-white/10 pb-1 last:border-b-0"
+                      className="flex justify-between items-center gap-2 border-b border-white/10 pb-1 last:border-b-0"
                     >
                       <div className="truncate">
                         <div className="font-medium truncate">
@@ -431,12 +471,20 @@ export default function ProductsPage() {
                           Qty: {r.quantity}
                         </div>
                       </div>
-                      <button
-                        onClick={() => openPaymentModal(r)}
-                        className="text-[11px] underline underline-offset-2 text-rose-200 hover:text-rose-100"
-                      >
-                        Complete
-                      </button>
+                      <div className="flex items-center gap-2">
+                        <button
+                          onClick={() => openPaymentModal(r)}
+                          className="text-[11px] underline underline-offset-2 text-rose-200 hover:text-rose-100"
+                        >
+                          Complete
+                        </button>
+                        <button
+                          onClick={() => handleReleaseReservation(r)}
+                          className="text-[13px] text-slate-300 hover:text-white border border-white/20 rounded-full px-2 py-[1px]"
+                        >
+                          ×
+                        </button>
+                      </div>
                     </div>
                   ))}
                 </div>
@@ -479,7 +527,7 @@ export default function ProductsPage() {
                     ].join(" ")}
                   >
                     <div className="mb-3 flex justify-center">
-                      <div className="h-28 w-20 sm:h-32 sm:w-24 rounded-2xl bg-gradient-to-b from-rose-300 via-pink-100 to-white shadow-inner flex items-end justify-center relative overflow-hidden">
+                      <div className="h-28 w-20 sm:h-32 sm:w-24 rounded-2xl bg-gradient-to-b from-rose-300 via-pink-100 to-white shadow-inner flex items.end justify-center relative overflow-hidden">
                         <div className="h-[60%] w-[60%] rounded-full bg-white/40 blur-2xl absolute -top-4" />
                         <span className="z-10 text-[11px] uppercase tracking-[0.18em] text-slate-800/70">
                           Glow
@@ -542,7 +590,7 @@ export default function ProductsPage() {
           )}
         </section>
 
-        {/* Reservation controls + history hint */}
+        {/* Reservation controls */}
         <section className="sticky bottom-3 md:static">
           <div className="rounded-3xl bg-white/95 backdrop-blur border border-rose-100 shadow-lg px-4 py-3 sm:px-5 sm:py-4 flex flex-col sm:flex-row items-stretch sm:items-center gap-3">
             <div className="flex-1">
@@ -551,11 +599,18 @@ export default function ProductsPage() {
               </div>
               {selectedProduct ? (
                 <div className="text-sm text-slate-700 flex flex-wrap items-center gap-2">
-                  <span>
+                  <span className="flex items-center gap-2">
                     Product:{" "}
                     <span className="font-semibold">
                       {selectedProduct.name}
                     </span>
+                    <button
+                      type="button"
+                      onClick={clearSelection}
+                      className="ml-1 text-xs text-slate-400 hover:text-slate-700 border border-slate-200 rounded-full px-2 py-[1px]"
+                    >
+                      ×
+                    </button>
                   </span>
                   <span className="hidden xs:inline text-slate-400">•</span>
                   <span className="flex items-center gap-1">
@@ -578,9 +633,8 @@ export default function ProductsPage() {
               )}
               {hasAnyReservations && (
                 <div className="mt-1 text-[11px] text-slate-400">
-                  You can have multiple active holds as long as stock is
-                  available. Completed and expired holds are kept as short-term
-                  history.
+                  You can hold multiple items as long as stock is available. All
+                  holds share a single timer based on your last reservation.
                 </div>
               )}
             </div>
@@ -590,7 +644,7 @@ export default function ProductsPage() {
                 type="button"
                 onClick={handleReserve}
                 disabled={!selectedProduct || submitting}
-                className="w-full sm:w-auto rounded-full bg-rose-500 px-5 py-2 text-xs sm:text-sm font-semibold text-white shadow hover:bg-rose-600 disabled:opacity-50"
+                className="w.full sm:w-auto rounded-full bg-rose-500 px-5 py-2 text-xs sm:text-sm font-semibold text-white shadow hover:bg-rose-600 disabled:opacity-50"
               >
                 {submitting ? "Reserving…" : "Reserve for 2 minutes"}
               </button>

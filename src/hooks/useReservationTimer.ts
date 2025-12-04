@@ -1,5 +1,4 @@
 /* eslint-disable react-hooks/set-state-in-effect */
-// frontend/src/hooks/useReservationTimer.ts
 "use client";
 
 import { useEffect, useState } from "react";
@@ -26,7 +25,6 @@ export function useReservationTimer(
 
       setRemainingMs(next);
 
-      // fire callback once when going from >0 to 0
       if (last > 0 && next === 0 && onElapsed) {
         onElapsed();
       }

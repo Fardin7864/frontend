@@ -1,14 +1,17 @@
+/* eslint-disable @typescript-eslint/no-explicit-any */
+// frontend/src/components/ProductsPage.tsx
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { fetchJSON } from "../lib/api";
 import { getOrCreateUserId } from "../lib/user";
 import { useReservationTimer } from "../hooks/useReservationTimer";
+import { getSocket } from "../lib/socket";
 
 type Product = {
   id: string;
   name: string;
-  price: string;
+  price: string | number;
   availableStock: number;
 };
 
@@ -143,6 +146,8 @@ function ToastContainer({ toasts }: { toasts: Toast[] }) {
 }
 
 export default function ProductsPage() {
+  const [userId, setUserId] = useState<string | null>(null);
+
   const [products, setProducts] = useState<Product[]>([]);
   const [loadingProducts, setLoadingProducts] = useState(true);
 
@@ -162,7 +167,12 @@ export default function ProductsPage() {
   const [toasts, setToasts] = useState<Toast[]>([]);
   const [toastCounter, setToastCounter] = useState(0);
 
-  const userId = typeof window !== "undefined" ? getOrCreateUserId() : "";
+  // 🔑 Initialize / restore userId on every mount.
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const id = getOrCreateUserId();
+    setUserId(id);
+  }, []);
 
   const addToast = useCallback(
     (type: ToastType, message: string) => {
@@ -203,19 +213,58 @@ export default function ProductsPage() {
     }
   }, [userId, addToast]);
 
-  // Initial load
+  // 🔁 Initial load
   useEffect(() => {
     if (!userId) return;
     reloadAll();
   }, [userId, reloadAll]);
 
-  // Active reservations
+  // 🔌 Socket.IO realtime updates
+  useEffect(() => {
+    if (!userId) return;
+    const socket = getSocket(userId);
+
+    const handleReservationsUpdated = () => {
+      // For reservations, refetch for this user only
+      reloadAll();
+    };
+
+    const handleProductsUpdated = (
+      updates: { id: string; availableStock: number }[]
+    ) => {
+      // Patch product stock in-place, so other users see stock change
+      setProducts((prev) => {
+        if (!prev.length) return prev;
+        const map = new Map(prev.map((p) => [p.id, p]));
+        for (const u of updates) {
+          const existing = map.get(u.id);
+          if (existing) {
+            map.set(u.id, {
+              ...existing,
+              availableStock: u.availableStock,
+            });
+          }
+        }
+        return Array.from(map.values());
+      });
+    };
+
+    socket.on("reservations:updated", handleReservationsUpdated);
+    socket.on("products:updated", handleProductsUpdated);
+
+    return () => {
+      socket.off("reservations:updated", handleReservationsUpdated);
+      socket.off("products:updated", handleProductsUpdated);
+    };
+  }, [userId, reloadAll]);
+
+  // Active reservations (from backend)
   const activeReservations = useMemo(
     () => reservations.filter((r) => r.status === "ACTIVE"),
     [reservations]
   );
 
-  // Global timer based on LAST reservation's expiresAt
+  // Global timer based on backend `expiresAt` (latest)
   const nextExpirationIso = useMemo(() => {
     if (activeReservations.length === 0) return undefined;
     const maxTime = Math.max(
@@ -240,6 +289,10 @@ export default function ProductsPage() {
 
   // Reserve product
   const handleReserve = async () => {
+    if (!userId) {
+      addToast("error", "User not initialized yet, please wait a moment.");
+      return;
+    }
     if (!selectedProduct) {
       addToast("error", "Please select a product first.");
       return;
@@ -355,7 +408,7 @@ export default function ProductsPage() {
     setQuantity(1);
   };
 
-  // 🔹 Reset database to default demo data
+  // Reset database to default demo data
   const handleResetDatabase = async () => {
     if (typeof window !== "undefined") {
       const ok = window.confirm(
@@ -367,7 +420,9 @@ export default function ProductsPage() {
     setLoadingProducts(true);
     setLoadingReservations(true);
     try {
-      await fetchJSON("/reservations/reset", { method: "POST" });
+      await fetchJSON("/reservations/reset", {
+        method: "POST",
+      });
       addToast("success", "Database reset to default demo data.");
       await reloadAll();
       clearSelection();
@@ -404,7 +459,6 @@ export default function ProductsPage() {
                 Flash Sale · Cosmetics
               </p>
 
-              {/* ✅ Reset demo data button */}
               <button
                 type="button"
                 onClick={handleResetDatabase}
@@ -414,7 +468,7 @@ export default function ProductsPage() {
               </button>
             </div>
 
-            <h1 className="text-2xl sm:text-3xl md:text-4xl font-semibold leading-tight">
+            <h1 className="text-2xl sm:3xl md:text-4xl font-semibold leading-tight">
               Glow now,
               <span className="text-rose-500 ml-2">reserve in 2 minutes</span>
             </h1>
@@ -449,7 +503,7 @@ export default function ProductsPage() {
                     {activeReservations.length > 1 ? "s" : ""}
                   </span>
                   {nextExpirationIso && (
-                    <span className="text-xs bg.white/10 px-2 py-1 rounded-full bg-white/10">
+                    <span className="text-xs bg-white/10 px-2 py-1 rounded-full">
                       Expires in {mm}:{ss}
                     </span>
                   )}
@@ -527,7 +581,7 @@ export default function ProductsPage() {
                     ].join(" ")}
                   >
                     <div className="mb-3 flex justify-center">
-                      <div className="h-28 w-20 sm:h-32 sm:w-24 rounded-2xl bg-gradient-to-b from-rose-300 via-pink-100 to-white shadow-inner flex items.end justify-center relative overflow-hidden">
+                      <div className="h-28 w-20 sm:h-32 sm:w-24 rounded-2xl bg-gradient-to-b from-rose-300 via-pink-100 to-white shadow-inner flex items-end justify-center relative overflow-hidden">
                         <div className="h-[60%] w-[60%] rounded-full bg-white/40 blur-2xl absolute -top-4" />
                         <span className="z-10 text-[11px] uppercase tracking-[0.18em] text-slate-800/70">
                           Glow
@@ -644,7 +698,7 @@ export default function ProductsPage() {
                 type="button"
                 onClick={handleReserve}
                 disabled={!selectedProduct || submitting}
-                className="w.full sm:w-auto rounded-full bg-rose-500 px-5 py-2 text-xs sm:text-sm font-semibold text-white shadow hover:bg-rose-600 disabled:opacity-50"
+                className="w-full sm:w-auto rounded-full bg-rose-500 px-5 py-2 text-xs sm:text-sm font-semibold text-white shadow hover:bg-rose-600 disabled:opacity-50"
               >
                 {submitting ? "Reserving…" : "Reserve for 2 minutes"}
               </button>

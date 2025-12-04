@@ -35,7 +35,7 @@ export default function RootLayout({
             <div className="text-xs sm:text-sm text-right text-slate-500">
               <div>2-minute stock reservation</div>
               <div className="text-[11px] sm:text-xs">
-                Complete your glow before time runs out ✨
+                Complete your glow before time runs out
               </div>
             </div>
           </header>
